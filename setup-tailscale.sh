@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================
-# Tailscale Auto-Setup Script
+# Tailscale Auto-Setup Script (Fully Headless, No GUI)
 # Works on: macOS (Intel/ARM), Linux (Debian/Ubuntu/Fedora/Arch)
-# Usage:    curl -fsSL https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/setup-tailscale.sh | bash
+#
+# Usage:
+#   bash setup-tailscale.sh YOUR_AUTH_KEY
+#   curl -fsSL https://raw.githubusercontent.com/seemandhar/Tailscale-setup/main/setup-tailscale.sh | bash -s -- YOUR_AUTH_KEY
+#
+# Get your auth key: login.tailscale.com → Settings → Keys → Generate auth key (check "Reusable")
 # =============================================================
 set -e
 
@@ -11,7 +16,11 @@ log()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-# --- Detect OS ---
+AUTH_KEY="${1:-}"
+if [ -z "$AUTH_KEY" ]; then
+    err "Auth key required. Usage: bash setup-tailscale.sh YOUR_AUTH_KEY\n    Get one at: https://login.tailscale.com/admin/settings/keys"
+fi
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 log "Detected: $OS ($ARCH)"
@@ -25,7 +34,6 @@ if [ "$OS" = "Darwin" ]; then
     if ! command -v brew &>/dev/null; then
         log "Installing Homebrew..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        # Add brew to PATH for Apple Silicon
         if [ "$ARCH" = "arm64" ]; then
             eval "$(/opt/homebrew/bin/brew shellenv)"
             echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
@@ -34,46 +42,40 @@ if [ "$OS" = "Darwin" ]; then
         log "Homebrew already installed"
     fi
 
-    # Install Tailscale
-    if ! brew list --cask tailscale &>/dev/null; then
-        log "Installing Tailscale..."
-        brew install --cask tailscale
+    # Install Tailscale CLI (not the GUI app)
+    if ! command -v tailscale &>/dev/null; then
+        log "Installing Tailscale CLI..."
+        brew install tailscale
     else
         log "Tailscale already installed"
     fi
 
-    # Open Tailscale app (registers as login item automatically)
-    log "Launching Tailscale..."
-    open /Applications/Tailscale.app
+    # Install and start system daemon (survives reboots)
+    log "Installing system daemon..."
+    sudo tailscaled install-system-daemon 2>/dev/null || true
 
-    # Wait for Tailscale daemon to be ready
-    log "Waiting for Tailscale to start..."
-    for i in $(seq 1 30); do
-        if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
-            break
-        fi
-        sleep 2
-    done
+    # Wait for daemon to be ready
+    log "Starting tailscaled..."
+    sleep 3
 
-    # Enable SSH
-    log "Enabling Tailscale SSH..."
-    tailscale up --ssh
+    # Authenticate headless with auth key + enable SSH
+    log "Authenticating with auth key..."
+    sudo tailscale up --ssh --authkey="$AUTH_KEY"
 
-    # Enable macOS Remote Login (sshd) if not already on
+    # Enable macOS Remote Login (sshd)
     if ! sudo systemsetup -getremotelogin 2>/dev/null | grep -q "On"; then
         warn "Enabling macOS Remote Login (SSH)..."
         sudo systemsetup -setremotelogin on
     fi
 
     log "macOS setup complete!"
-    log "Tailscale runs on login automatically via the menu bar app."
 
 # =============================================================
 # Linux
 # =============================================================
 elif [ "$OS" = "Linux" ]; then
 
-    # Install Tailscale using official script
+    # Install Tailscale
     if ! command -v tailscale &>/dev/null; then
         log "Installing Tailscale..."
         curl -fsSL https://tailscale.com/install.sh | sh
@@ -81,18 +83,16 @@ elif [ "$OS" = "Linux" ]; then
         log "Tailscale already installed"
     fi
 
-    # Enable and start the daemon
+    # Enable and start daemon
     log "Enabling tailscaled service..."
     sudo systemctl enable --now tailscaled
 
-    # Bring up Tailscale with SSH
-    log "Starting Tailscale with SSH..."
-    sudo tailscale up --ssh
+    # Authenticate headless with auth key + enable SSH
+    log "Authenticating with auth key..."
+    sudo tailscale up --ssh --authkey="$AUTH_KEY"
 
     # Ensure sshd is running
-    if command -v systemctl &>/dev/null; then
-        sudo systemctl enable --now sshd 2>/dev/null || sudo systemctl enable --now ssh 2>/dev/null || true
-    fi
+    sudo systemctl enable --now sshd 2>/dev/null || sudo systemctl enable --now ssh 2>/dev/null || true
 
     log "Linux setup complete!"
 
@@ -100,21 +100,21 @@ elif [ "$OS" = "Linux" ]; then
 # Unsupported OS
 # =============================================================
 else
-    err "Unsupported OS: $OS. For Windows, download Tailscale from https://tailscale.com/download/windows"
+    err "Unsupported OS: $OS. For Windows, download from https://tailscale.com/download/windows"
 fi
 
 # =============================================================
-# Print status
+# Status
 # =============================================================
 echo ""
 log "========================================="
 log "  Tailscale is installed and running!"
 log "========================================="
 echo ""
-tailscale status 2>/dev/null || warn "Run 'tailscale status' after signing in"
+TSIP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
+log "Tailscale IP: $TSIP"
+log "SSH command:  ssh $(whoami)@$TSIP"
+log "MagicDNS:     ssh $(whoami)@$(hostname)"
 echo ""
-log "Your Tailscale IP:"
-tailscale ip -4 2>/dev/null || warn "Sign in first, then run 'tailscale ip -4'"
-echo ""
-log "SSH from anywhere: ssh $(whoami)@$(tailscale ip -4 2>/dev/null || echo '<your-tailscale-ip>')"
+log "Manage devices: https://login.tailscale.com/admin/machines"
 echo ""
